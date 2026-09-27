@@ -4,3 +4,5 @@
 [![CircleCI branch](https://img.shields.io/circleci/project/github/nails/module-webhooks.svg)](https://circleci.com/gh/nails/module-webhooks)
 
 This module brings webhook functionality to Nails.
+
+The implementation plan is in [docs/plan.md](docs/plan.md).
