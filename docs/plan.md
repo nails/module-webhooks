@@ -252,13 +252,17 @@ The public controller `webhooks/controllers/Ingress.php` reads the request and c
 2. For a configurable definition, resolve the instance by token. 404 when missing, disabled, or soft-deleted. A configurable definition with no token is also 404.
 3. A singleton URL that includes a token is 404.
 4. Read the raw body once. Open the file log.
-5. When the handler is `Idempotent` and the key has already been recorded for this definition or instance, return the stored outcome and do not call `handle()`.
-6. When the handler is protected, `verify()`. A challenge result is logged and returned. A rejection is an audit row of `rejected` and 401. `handle()` is not called.
+5. When the handler is protected, `verify()`. A challenge result is logged and returned. A rejection is an audit row of `rejected` and 401. `handle()` is not called.
+6. Resolve the idempotency key (below). When a previous `accepted` or `ignored` row exists for this scope and key, write a new audit row of `ignored` with summary `Duplicate delivery`, return 200, and do not call `handle()`.
 7. Call `handle()`.
-8. Write the audit row from the `Result`. Return 200 or 500 as above.
+8. Write the audit row from the `Result`. If that insert loses a race on the success unique key, write `ignored` / `Duplicate delivery` and return 200.
 9. On an exception, log the trace to the file, write status `failed`, return 500.
 
-Idempotency is `Nails\Webhooks\Interfaces\Idempotent::getIdempotencyKey(Delivery $oDelivery): ?string`. A null key means "do not dedupe this request". The unique key is `(scope, idempotency_key)` where scope is the instance id, or `definition:{slug}` for a singleton. MySQL unique indexes do not treat `NULL` instance ids as equal, so the scope column is required.
+Duplicates are handled for every webhook. The default key is `sha256` of the raw body, so a provider retry of the same request becomes `Result::ignored()` and `handle()` runs once. `failed` and `rejected` do not count: a retry after an error or a bad signature still runs. `challenged` does not count either.
+
+Scope is the instance id, or `definition:{slug}` for a singleton. The column exists because a MySQL unique index does not treat `NULL` instance ids as equal.
+
+`Nails\Webhooks\Interfaces\Idempotent::getIdempotencyKey(Delivery $oDelivery): ?string` replaces the body hash when the body is not a stable identity (a changing attempt id in the payload, for example). A null return keeps the body hash. Stripe retries are byte-identical, so `event.id` is optional there.
 
 Handling is inline. A handler that may exceed the provider's timeout (Stripe gives about 20 seconds) accepts the `Result`, queues its own work, and returns. This module does not grow a queue dependency for that.
 
@@ -316,13 +320,14 @@ Migration `Nails\Webhooks\Database\Migration\Migration1`, using `Nails\Common\In
 | `scope` | instance id or `definition:{slug}` |
 | `status` | |
 | `http_status` | |
-| `idempotency_key` | nullable |
+| `idempotency_key` | sha256 of the body, or the handler's key |
+| `success_key` | generated: `idempotency_key` when status is `accepted` or `ignored`, otherwise `NULL` |
 | `summary` | varchar(500) |
 | `duration_ms` | |
 | `log_file` | |
 | `created` | |
 
-Unique `(scope, idempotency_key)`. Indexes on `(definition_slug, created)` and `(instance_id, created)`.
+Unique `(scope, success_key)`. MySQL allows many `NULL`s, so several `failed` or `rejected` rows can share a key, and a second `accepted` or `ignored` insert conflicts. Indexes on `(definition_slug, created)`, `(instance_id, created)`, and `(scope, idempotency_key)`.
 
 Models `Nails\Webhooks\Model\Instance` and `Model\Delivery` extend `Nails\Common\Model\Base`. `config` is encoded and decoded in the model, the same way invoice treats `callback_data`. Resources `Resource\Instance` and `Resource\Delivery` sit beside them. `Instance::config($sKey, $mDefault)` reads the decoded object.
 
@@ -367,7 +372,7 @@ This module does not require `nails/module-invoice`. The stripe driver (`nails/d
 - slug `nails/driver-invoice-stripe/payment-notification`, derived from the driver package and the class name
 - singleton, no `Configurable` (one platform Stripe account; the signing secret already belongs in the driver settings)
 - `ProtectedWebhook` + `SignsPayload` in timestamp mode, header `Stripe-Signature`
-- `Idempotent`, key `event.id`
+- duplicate Stripe retries are ignored from the body hash; `Idempotent` with key `event.id` only if a retry would not be byte-identical
 - `handle()` switches on `event.type` (`payment_intent.succeeded`, `charge.refunded`, and the rest) and calls the existing payment complete / refund path
 - unknown event types return `Result::ignored()`
 - `Subscribable` is a later option if the driver should register the endpoint through Stripe's API; pasting `/webhooks/nails/driver-invoice-stripe/payment-notification` into the Stripe dashboard is enough for the first version
@@ -429,7 +434,7 @@ Pure unit tests, no database:
 - `HmacSignature` accepts a good signature, rejects a bad one, rejects an old timestamp, and accepts either `v1` during rotation
 - `SharedSecretHeader` uses a non-short-circuit compare (`hash_equals` is covered by a mismatch and a match)
 - challenge `Protection` returns a `Result` and does not look like a rejection
-- `Ingress` with a fake `Webhook` service and fake models: unknown slug 404, bad signature 401 and no `handle()`, accepted 200 and an audit insert, thrown exception 500, duplicate idempotency key does not call `handle()` a second time
+- `Ingress` with a fake `Webhook` service and fake models: unknown slug 404, bad signature 401 and no `handle()`, accepted 200 and an audit insert, thrown exception 500, a second identical body after `accepted` is `ignored` and does not call `handle()`, a second identical body after `failed` does call `handle()`
 - `Webhook` slug derivation, given an explicit component and class list so the test does not need a booted app: `PaymentNotification` on `nails/module-invoice` becomes `nails/module-invoice/payment-notification`; `Webhooks\Stripe\PaymentNotification` keeps the extra segment; an app class becomes `app/post-to-channel`. A duplicate derived slug throws. `discover()` remains the path that calls `Components::available()`
 
 Fixtures live under `tests/Fixture`, not `src/Webhooks`, so a real install never exposes them.
