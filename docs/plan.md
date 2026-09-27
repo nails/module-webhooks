@@ -21,9 +21,14 @@ foreach (Components::available() as $oComponent) {
 
 `ClassCollection` also has `whichUse()`, which is how configurable handlers are picked out.
 
-`Nails\Webhooks\Service\Registry` performs that scan once and caches it. Callers ask the registry for a slug; they do not scan themselves.
+`Nails\Webhooks\Service\Webhook` performs that scan once and caches it. Callers ask that service for a slug; they do not scan themselves.
 
-On a slug collision the app wins. Components are returned app-first, so the registry shifts the app to the end before registering, matching `Nails\Common\Validation\Registry`. The admin definition list shows the winning class and the component it came from.
+```php
+/** @var \Nails\Webhooks\Service\Webhook $oWebhookService */
+$oWebhookService = Factory::service('Webhook', Constants::MODULE_SLUG);
+```
+
+The service is named `Webhook`, same as `PaymentDriver` and `Event`: the name is the thing it looks after. `services/services.php` registers it under that key.
 
 `composer.json` `extra.nails` has no `namespace` today. `findClasses()` and admin controller discovery both read that value, so the first change is:
 
@@ -40,8 +45,6 @@ namespace Nails\Webhooks\Interfaces;
 
 interface Webhook
 {
-    public function getSlug(): string;
-
     public function getLabel(): string;
 
     public function getDescription(): string;
@@ -52,9 +55,28 @@ interface Webhook
 }
 ```
 
-`Nails\Webhooks\Traits\Defaults` supplies `getDescription()` as `''` and `isEnabled()` as `true`. A handler uses the trait and implements slug, label, and `handle()`.
+`Nails\Webhooks\Traits\Defaults` supplies `getDescription()` as `''` and `isEnabled()` as `true`. A handler uses the trait and implements label and `handle()`.
 
-`getSlug()` is the URL segment. Lowercase, digits, and hyphens. It is stable: changing it breaks every provider already pointing at it.
+## Slug
+
+The handler does not choose its slug. `Service\Webhook` derives it:
+
+`{component slug}/{kebab-case path under Webhooks}`
+
+The component slug is the composer package name (`$oComponent->slug`), already `{vendor}/{package}`. Each segment under `Webhooks` is kebab-cased on camel-case boundaries.
+
+| Class | Slug |
+|---|---|
+| `\Nails\Invoice\Webhooks\PaymentNotification` | `nails/module-invoice/payment-notification` |
+| `\Nails\Invoice\Driver\Payment\Stripe\Webhooks\PaymentNotification` | `nails/driver-invoice-stripe/payment-notification` |
+| `\Nails\Invoice\Webhooks\Stripe\PaymentNotification` | `nails/module-invoice/stripe/payment-notification` |
+| `\App\Webhooks\PostToChannel` | `app/post-to-channel` |
+
+A nested folder stays in the path, so two classes with the same short name in one package still differ.
+
+A method such as `getSlug()` would be a second global namespace. Two modules can both reasonably be called `payment-notification`, and a tie-break would hide one of them. The derived slug only collides when two components share a package name. Discovery throws if that happens, rather than picking a winner.
+
+The URL is longer than a hand-written slug. It is copied from the admin screen into the provider once. Renaming or moving the class changes the URL. That is the same identity change as renaming the class, and there is no override that lets the two drift apart.
 
 `handle()` returns a `Result`. It does not write the HTTP response.
 
@@ -133,7 +155,7 @@ The admin instance screen shows subscribe, unsubscribe, and status when the defi
 
 A definition is always a file. Some definitions are also a template: the decode-and-act logic is shared, and each user supplies their own channel, secret, and label.
 
-Using `Nails\Webhooks\Traits\Configurable` marks that template. The registry finds them with `whichUse(Configurable::class)`.
+Using `Nails\Webhooks\Traits\Configurable` marks that template. `Service\Webhook` finds them with `whichUse(Configurable::class)`.
 
 ```php
 trait Configurable
@@ -156,11 +178,6 @@ class PostToChannel implements Webhook, ProtectedWebhook
     use Defaults;
     use Configurable;
     use SharedSecret;
-
-    public function getSlug(): string
-    {
-        return 'post-to-channel';
-    }
 
     public function getLabel(): string
     {
@@ -212,23 +229,24 @@ A definition without the trait is a singleton. One URL, no instance row. Its sec
 
 | Kind | URL |
 |---|---|
-| Singleton | `/webhooks/{slug}` |
-| Instance | `/webhooks/{slug}/{token}` |
+| Singleton | `/webhooks/nails/module-invoice/payment-notification` |
+| Instance | `/webhooks/app/post-to-channel/{token}` |
 
 The token is `bin2hex(random_bytes(32))`, stored on the instance, and shown in admin so it can be copied to the provider. Regenerating it is an explicit action. Unknown slug, unknown token, and disabled handler or instance all answer 404.
 
-Routes, via `Nails\Webhooks\Routes`:
+The slug contains slashes, so there is one catch-all route:
 
 ```php
-'webhooks/([a-z0-9\-]+)/([a-f0-9]{64})' => 'webhooks/ingress/index/$1/$2',
-'webhooks/([a-z0-9\-]+)'                => 'webhooks/ingress/index/$1',
+'webhooks/(.+)' => 'webhooks/ingress/index/$1',
 ```
+
+`Ingress` splits that path. When the last segment is 64 hex characters and the remainder is a configurable definition, that segment is the instance token. Otherwise the whole path is the slug.
 
 The public controller `webhooks/controllers/Ingress.php` reads the request and calls `Nails\Webhooks\Service\Ingress`. GET and POST are accepted. Anything else is 405. CSRF protection is off in Nails by default; an app that enables it excludes `webhooks/.*`.
 
 ## Ingress
 
-`Service\Ingress::receive(string $sSlug, ?string $sToken)`:
+`Service\Ingress::receive(string $sPath)` parses the slug and optional token, then:
 
 1. Resolve the definition. 404 when missing or `isEnabled()` is false.
 2. For a configurable definition, resolve the instance by token. 404 when missing, disabled, or soft-deleted. A configurable definition with no token is also 404.
@@ -316,7 +334,7 @@ Controllers live in `src/Admin/Controller` so `Nails\Admin\Service\Controller` d
 
 Sidebar group **Webhooks**.
 
-**Definitions** (`Admin\Controller\Definition`). Read only. Built from the registry, not a table, so it does not extend `DefaultController`. Columns: label, slug, component, flavour (Simple / Protected), protection (shared secret, signature, custom, or none), shape (singleton / configurable), URL for singletons. Row action opens deliveries filtered to that slug. No create or delete.
+**Definitions** (`Admin\Controller\Definition`). Read only. Built from `Service\Webhook`, not a table, so it does not extend `DefaultController`. Columns: label, slug, component, flavour (Simple / Protected), protection (shared secret, signature, custom, or none), shape (singleton / configurable), URL for singletons. Row action opens deliveries filtered to that slug. No create or delete.
 
 **Instances** (`Admin\Controller\Instance`). Custom controller on `Model\Instance`, using the admin base and `announce()`. `DefaultController` is a poor fit because the form fields depend on which definition is selected.
 
@@ -346,13 +364,13 @@ No component settings screen. Per-user configuration is the instance row. Module
 
 This module does not require `nails/module-invoice`. The stripe driver (`nails/driver-invoice-stripe`, component namespace `Nails\Invoice\Driver\Payment\Stripe\`) would add `src/Stripe/Webhooks/PaymentNotification.php`:
 
-- slug `invoice-stripe`
+- slug `nails/driver-invoice-stripe/payment-notification`, derived from the driver package and the class name
 - singleton, no `Configurable` (one platform Stripe account; the signing secret already belongs in the driver settings)
 - `ProtectedWebhook` + `SignsPayload` in timestamp mode, header `Stripe-Signature`
 - `Idempotent`, key `event.id`
 - `handle()` switches on `event.type` (`payment_intent.succeeded`, `charge.refunded`, and the rest) and calls the existing payment complete / refund path
 - unknown event types return `Result::ignored()`
-- `Subscribable` is a later option if the driver should register the endpoint through Stripe's API; pasting `/webhooks/invoice-stripe` into the Stripe dashboard is enough for the first version
+- `Subscribable` is a later option if the driver should register the endpoint through Stripe's API; pasting `/webhooks/nails/driver-invoice-stripe/payment-notification` into the Stripe dashboard is enough for the first version
 
 A second, configurable handler in the same driver would be the "connect" case: each instance stores its own Stripe account and signing secret. Same `handle()`, `secret()` reads the instance. That handler uses `Configurable`. It is a separate class, not a mode flag on the singleton.
 
@@ -377,7 +395,7 @@ src/Delivery.php
 src/Result.php
 src/Exception/RejectedException.php
 src/Exception/UnknownWebhookException.php
-src/Service/Registry.php
+src/Service/Webhook.php
 src/Service/Ingress.php
 src/Service/Log.php
 src/Model/Instance.php
@@ -396,7 +414,7 @@ webhooks/controllers/Ingress.php
 services/services.php
 ```
 
-`services/services.php` registers `Registry`, `Ingress`, `Log`, both models, and both resources, with the usual `\App\Webhooks\...` override check used by invoice.
+`services/services.php` registers `Webhook`, `Ingress`, `Log`, both models, and both resources, with the usual `\App\Webhooks\...` override check used by invoice. Callers load the catalogue with `Factory::service('Webhook', Constants::MODULE_SLUG)`.
 
 ## Dependencies
 
@@ -411,8 +429,8 @@ Pure unit tests, no database:
 - `HmacSignature` accepts a good signature, rejects a bad one, rejects an old timestamp, and accepts either `v1` during rotation
 - `SharedSecretHeader` uses a non-short-circuit compare (`hash_equals` is covered by a mismatch and a match)
 - challenge `Protection` returns a `Result` and does not look like a rejection
-- `Ingress` with a fake registry and fake models: unknown slug 404, bad signature 401 and no `handle()`, accepted 200 and an audit insert, thrown exception 500, duplicate idempotency key does not call `handle()` a second time
-- `Registry` collision: two classes, same slug, app class wins. Construct the registry with an explicit list so the test does not need a booted app; `discover()` remains the path that calls `Components::available()`
+- `Ingress` with a fake `Webhook` service and fake models: unknown slug 404, bad signature 401 and no `handle()`, accepted 200 and an audit insert, thrown exception 500, duplicate idempotency key does not call `handle()` a second time
+- `Webhook` slug derivation, given an explicit component and class list so the test does not need a booted app: `PaymentNotification` on `nails/module-invoice` becomes `nails/module-invoice/payment-notification`; `Webhooks\Stripe\PaymentNotification` keeps the extra segment; an app class becomes `app/post-to-channel`. A duplicate derived slug throws. `discover()` remains the path that calls `Components::available()`
 
 Fixtures live under `tests/Fixture`, not `src/Webhooks`, so a real install never exposes them.
 
@@ -421,7 +439,7 @@ Fixtures live under `tests/Fixture`, not `src/Webhooks`, so a real install never
 1. Composer: namespace, swap `module-cdn` for `module-admin`, phpstan config.
 2. Interfaces, traits, `Delivery`, `Result`, exceptions.
 3. `HmacSignature` and `SharedSecretHeader`, with tests.
-4. `Registry`, with the collision test.
+4. `Service\Webhook`, with the slug derivation test.
 5. Migration, models, resources, `services.php`.
 6. `Log` and `Ingress`, with the ingress tests. Public controller and routes.
 7. Admin definitions, instances, deliveries, permissions.
