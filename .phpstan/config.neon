@@ -3,3 +3,9 @@ parameters:
     paths:
         - ../src
         - ../tests
+    scanFiles:
+        - ../vendor/nails/common/helpers/url.php
+        - ../vendor/nails/common/helpers/form.php
+        - ../vendor/nails/common/src/Common/CodeIgniter/Core/Common.php
+        - ../vendor/nails/module-admin/helpers/permission.php
+        - ../vendor/nails/module-admin/helpers/admin.php
