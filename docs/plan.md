@@ -341,7 +341,7 @@ Controllers live in `src/Admin/Controller` so `Nails\Admin\Service\Controller` d
 
 Sidebar group **Webhooks**.
 
-**Definitions** (`Admin\Controller\Definition`). Read only. Built from `Service\Webhook`, not a table, so it does not extend `DefaultController`. Columns: label, slug, component, flavour (Simple / Protected), protection (shared secret, signature, custom, or none), shape (singleton / configurable), URL for singletons. Row action opens deliveries filtered to that slug. No create or delete.
+**Definitions** (`Admin\Controller\Definition`). Read only. Built from `Service\Webhook`, not a table, so it does not extend `DefaultController`. Columns: label, slug, component, flavour (Simple / Protected), protection (shared secret, signature, custom, or none), shape (singleton / configurable), dedupe (on, or off when the class uses `AllowsDuplicates`), URL for singletons. Row action opens deliveries filtered to that slug. No create or delete.
 
 **Instances** (`Admin\Controller\Instance`). Custom controller on `Model\Instance`, using the admin base and `announce()`. `DefaultController` is a poor fit because the form fields depend on which definition is selected.
 
