@@ -253,9 +253,9 @@ The public controller `webhooks/controllers/Ingress.php` reads the request and c
 3. A singleton URL that includes a token is 404.
 4. Read the raw body once. Open the file log.
 5. When the handler is protected, `verify()`. A challenge result is logged and returned. A rejection is an audit row of `rejected` and 401. `handle()` is not called.
-6. Resolve the idempotency key (below). When a previous `accepted` or `ignored` row exists for this scope and key, write a new audit row of `ignored` with summary `Duplicate delivery`, return 200, and do not call `handle()`.
+6. Unless the handler uses `AllowsDuplicates`, resolve the idempotency key (below). When a previous `accepted` or `ignored` row exists for this scope and key, write a new audit row of `ignored` with summary `Duplicate delivery`, return 200, and do not call `handle()`.
 7. Call `handle()`.
-8. Write the audit row from the `Result`. If that insert loses a race on the success unique key, write `ignored` / `Duplicate delivery` and return 200.
+8. Write the audit row from the `Result`. If that insert loses a race on the success unique key, write `ignored` / `Duplicate delivery` and return 200. A handler using `AllowsDuplicates` stores a `NULL` key, so this race does not apply.
 9. On an exception, log the trace to the file, write status `failed`, return 500.
 
 Duplicates are handled for every webhook. The default key is `sha256` of the raw body, so a provider retry of the same request becomes `Result::ignored()` and `handle()` runs once. `failed` and `rejected` do not count: a retry after an error or a bad signature still runs. `challenged` does not count either.
@@ -263,6 +263,8 @@ Duplicates are handled for every webhook. The default key is `sha256` of the raw
 Scope is the instance id, or `definition:{slug}` for a singleton. The column exists because a MySQL unique index does not treat `NULL` instance ids as equal.
 
 `Nails\Webhooks\Interfaces\Idempotent::getIdempotencyKey(Delivery $oDelivery): ?string` replaces the body hash when the body is not a stable identity (a changing attempt id in the payload, for example). A null return keeps the body hash. Stripe retries are byte-identical, so `event.id` is optional there.
+
+`Nails\Webhooks\Traits\AllowsDuplicates` turns dedupe off for that handler. `Service\Webhook` sees it with `whichUse()`. Ingress skips the lookup, stores `idempotency_key` as `NULL`, and calls `handle()` on every verified request. The trait wins if the class also implements `Idempotent`.
 
 Handling is inline. A handler that may exceed the provider's timeout (Stripe gives about 20 seconds) accepts the `Result`, queues its own work, and returns. This module does not grow a queue dependency for that.
 
@@ -394,6 +396,7 @@ src/Traits/Defaults.php
 src/Traits/Configurable.php
 src/Traits/SharedSecret.php
 src/Traits/SignsPayload.php
+src/Traits/AllowsDuplicates.php
 src/Protection/HmacSignature.php
 src/Protection/SharedSecretHeader.php
 src/Delivery.php
@@ -434,7 +437,7 @@ Pure unit tests, no database:
 - `HmacSignature` accepts a good signature, rejects a bad one, rejects an old timestamp, and accepts either `v1` during rotation
 - `SharedSecretHeader` uses a non-short-circuit compare (`hash_equals` is covered by a mismatch and a match)
 - challenge `Protection` returns a `Result` and does not look like a rejection
-- `Ingress` with a fake `Webhook` service and fake models: unknown slug 404, bad signature 401 and no `handle()`, accepted 200 and an audit insert, thrown exception 500, a second identical body after `accepted` is `ignored` and does not call `handle()`, a second identical body after `failed` does call `handle()`
+- `Ingress` with a fake `Webhook` service and fake models: unknown slug 404, bad signature 401 and no `handle()`, accepted 200 and an audit insert, thrown exception 500, a second identical body after `accepted` is `ignored` and does not call `handle()`, a second identical body after `failed` does call `handle()`, a handler using `AllowsDuplicates` calls `handle()` on every identical body
 - `Webhook` slug derivation, given an explicit component and class list so the test does not need a booted app: `PaymentNotification` on `nails/module-invoice` becomes `nails/module-invoice/payment-notification`; `Webhooks\Stripe\PaymentNotification` keeps the extra segment; an app class becomes `app/post-to-channel`. A duplicate derived slug throws. `discover()` remains the path that calls `Components::available()`
 
 Fixtures live under `tests/Fixture`, not `src/Webhooks`, so a real install never exposes them.
