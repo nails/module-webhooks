@@ -5,7 +5,7 @@
 
 This module brings webhook functionality to Nails. A component exposes an endpoint by adding a class under `src/Webhooks` that implements `Nails\Webhooks\Interfaces\Webhook`. The module discovers it, verifies the request, and records the outcome.
 
-The implementation plan is in [.agents/features/webhooks.md](.agents/features/webhooks.md).
+The implementation plan is in [.agents/features/webhooks.md](.agents/features/webhooks.md). The GitBook pages for the Nails docs site are in [docs/](docs/).
 
 ## Handlers
 
