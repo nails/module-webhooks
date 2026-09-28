@@ -253,7 +253,7 @@ The public controller `webhooks/controllers/Ingress.php` reads the request and c
 3. A singleton URL that includes a token is 404.
 4. Read the raw body once. Open the file log.
 5. When the handler is protected, `verify()`. A challenge result is logged and returned. A rejection is an audit row of `rejected` and 401. `handle()` is not called.
-6. Unless the handler uses `AllowsDuplicates`, resolve the idempotency key (below). When a previous `accepted` or `ignored` row exists for this scope and key, write a new audit row of `ignored` with summary `Duplicate delivery`, return 200, and do not call `handle()`.
+6. Unless the handler uses `AllowsDuplicates`, resolve the idempotency key (below). When a previous `accepted` or `ignored` row exists for this scope and key, write a new audit row of `ignored` with summary `Duplicate delivery` and a null idempotency key (so it does not take the unique slot), return 200, and do not call `handle()`.
 7. Call `handle()`.
 8. Write the audit row from the `Result`. If that insert loses a race on the success unique key, write `ignored` / `Duplicate delivery` and return 200. A handler using `AllowsDuplicates` stores a `NULL` key, so this race does not apply.
 9. On an exception, log the trace to the file, write status `failed`, return 500.
@@ -329,7 +329,7 @@ Migration `Nails\Webhooks\Database\Migration\Migration1`, using `Nails\Common\In
 | `log_file` | |
 | `created` | |
 
-Unique `(scope, success_key)`. MySQL allows many `NULL`s, so several `failed` or `rejected` rows can share a key, and a second `accepted` or `ignored` insert conflicts. Indexes on `(definition_slug, created)`, `(instance_id, created)`, and `(scope, idempotency_key)`.
+Unique `(scope, success_key)`. MySQL allows many `NULL`s, so several `failed` or `rejected` rows can share a key, and a second `accepted` or `ignored` insert conflicts. A duplicate audit row stores a null `idempotency_key` and names the original uuid in the summary, so the retry is visible without occupying that unique slot. Indexes on `(definition_slug, created)`, `(instance_id, created)`, and `(scope, idempotency_key)`.
 
 Models `Nails\Webhooks\Model\Instance` and `Model\Delivery` extend `Nails\Common\Model\Base`. `config` is encoded and decoded in the model, the same way invoice treats `callback_data`. Resources `Resource\Instance` and `Resource\Delivery` sit beside them. `Instance::config($sKey, $mDefault)` reads the decoded object.
 

@@ -29,8 +29,9 @@
     "require":
     {
         "php": ">=8.3",
+        "ext-json": "*",
         "nails/common": "dev-develop",
-        "nails/module-cdn": "dev-develop"
+        "nails/module-admin": "dev-develop"
     },
     "require-dev":
     {
@@ -49,12 +50,20 @@
             "Nails\\Webhooks\\": "src/"
         }
     },
+    "autoload-dev":
+    {
+        "psr-4":
+        {
+            "Tests\\Webhooks\\": "tests/"
+        }
+    },
     "extra":
     {
         "nails":
         {
             "moduleName": "webhooks",
-            "type": "module"
+            "type": "module",
+            "namespace": "Nails\\Webhooks\\"
         }
     }
 }
