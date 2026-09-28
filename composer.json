@@ -30,8 +30,8 @@
     {
         "php": ">=8.3",
         "ext-json": "*",
-        "nails/common": "dev-develop",
-        "nails/module-admin": "dev-develop"
+        "nails/common": "dev-feature/pre-new-admin",
+        "nails/module-admin": "dev-feature/pre-new-admin"
     },
     "require-dev":
     {
